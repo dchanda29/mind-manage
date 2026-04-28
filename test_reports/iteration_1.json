@@ -1,0 +1,32 @@
+{
+  "summary": "Backend testing of MindManage complete. 17/17 pytest tests passed against public REACT_APP_BACKEND_URL. Covered: health, welcome quote, subscription packages (4.99/14.99/99.99 USD), unauthenticated 401, invalid session 401, seeded-session auth (/api/auth/me), subscription status (trial/active/expired), chat CRUD (manage+support), max-5 chat enforcement (oldest deleted), live LLM call via Claude Sonnet 4.5 (returned valid assistant message), crisis detection (skips LLM, returns helplines incl. 988 and iCall literally), subscription gating (402 on expired trial for both POST /chats and POST /chats/message), active subscription bypass, Stripe checkout (real session URL + payment_transactions row with payment_status='initiated'), invalid package rejection, and logout clearing DB session.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/payments/checkout", "issue": "Invalid package_id rejected by Pydantic Literal validator (422) before reaching the explicit 400 branch in code (server.py L537-538). Branch is dead code. Spec asked for 400; consumer-visible behavior is still rejection."},
+      {"endpoint": "POST /api/auth/logout", "issue": "Only reads cookie token, ignores Authorization Bearer header. So API clients using Bearer auth cannot logout via the endpoint (server.py L368-373). Cookie-based logout works."},
+      {"endpoint": "POST /api/auth/session", "issue": "Sets cookie with samesite='none' + secure=True; works on HTTPS preview but will silently fail to set in any non-HTTPS local dev environment."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Optional: change /api/payments/checkout to accept str + manually validate so the explicit 400 path is reachable (currently shadowed by Pydantic 422).",
+    "Optional: have /api/auth/logout also accept Bearer token to delete the matching session row for non-cookie clients."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 720 lines — borderline; consider splitting into routers/ (auth, chats, payments, subscription) for maintainability before more features are added.",
+    "_llm_reply ignores `history` arg (comment says emergentintegrations tracks per session_id); fine but the unused parameter is misleading — drop or actually replay.",
+    "payment_status (L615) does `.get('subscription_end')` on a possibly-None find_one result if user vanished — unlikely but unguarded.",
+    "Crisis keyword list is English-only; reasonable for MVP but document this limitation. LLM-side safety prompt covers other cases.",
+    "MAX_SAVED_CHATS uses to_list(length=100) so if a race created >100 chats, enforcement misses the rest. Use length=None or a bigger cap.",
+    "All endpoints prefixed with /api correctly. _id properly excluded everywhere via projections."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100%", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "No fixed Google account; tests seed users+sessions directly via mongosh per /app/auth_testing.md. Stripe sk_test_emergent works end-to-end.",
+  "seed_data_creation": "Each test seeds its own user + 7-day session_token in test_database (users, user_sessions). Cleaned up via session-scope autouse fixture deleting *@mindmanage.test users, test_session_* tokens, and related chats/transactions.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Use /app/backend/tests/backend_test.py with `pytest -v`. BASE_URL comes from REACT_APP_BACKEND_URL. Real LLM and Stripe calls are made — if LLM returns 503 the test self-skips. Crisis detection is keyword-based and bypasses the LLM. FE not built yet."
+}
