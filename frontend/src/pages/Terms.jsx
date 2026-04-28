@@ -89,7 +89,7 @@ export default function Terms() {
 
           <section>
             <h2 className="font-serif-mm text-xl text-mm-primary">10. Contact</h2>
-            <p>Questions? Email <a className="text-mm-brand underline" href="mailto:hello@mindmanage.app">hello@mindmanage.app</a>.</p>
+            <p>Questions? Email <a className="text-mm-brand underline" href="mailto:d29chanda@gmail.com">d29chanda@gmail.com</a>.</p>
           </section>
         </article>
       </div>

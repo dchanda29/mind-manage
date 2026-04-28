@@ -42,7 +42,7 @@ export default function Pricing() {
       const { url } = await api.openBillingPortal(window.location.origin + "/home");
       window.location.href = url;
     } catch (e) {
-      setError("Couldn't open billing portal. Email hello@mindmanage.app to manage your subscription.");
+      setError("Couldn't open billing portal. Email d29chanda@gmail.com to manage your subscription.");
       setPortalLoading(false);
     }
   };

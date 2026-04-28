@@ -73,7 +73,7 @@ sudo supervisorctl restart frontend
 - [ ] Confirm Stripe is in **live mode** (`sk_live_…`)
 - [ ] Update `MONGO_URL` to MongoDB Atlas (or other production cluster)
 - [ ] Verify `EMERGENT_LLM_KEY` has sufficient credits
-- [ ] Replace placeholder emails (`hello@mindmanage.app`) with your real contact
+- [ ] Replace placeholder emails (`d29chanda@gmail.com`) if you'd like a different support address
 
 ### 2. MongoDB Atlas (free tier OK for v1)
 - Sign up at https://www.mongodb.com/cloud/atlas/register

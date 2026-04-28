@@ -68,7 +68,7 @@ export default function Privacy() {
             <h2 className="font-serif-mm text-xl text-mm-primary">5. Your Rights</h2>
             <p>
               You can request a copy of your data, ask us to delete your account, or correct your info at any time —
-              email <a className="text-mm-brand underline" href="mailto:privacy@mindmanage.app">privacy@mindmanage.app</a>.
+              email <a className="text-mm-brand underline" href="mailto:d29chanda@gmail.com">d29chanda@gmail.com</a>.
               EU/UK users have GDPR rights; California users have CCPA rights.
             </p>
           </section>
@@ -90,7 +90,7 @@ export default function Privacy() {
 
           <section>
             <h2 className="font-serif-mm text-xl text-mm-primary">9. Contact</h2>
-            <p>Email <a className="text-mm-brand underline" href="mailto:privacy@mindmanage.app">privacy@mindmanage.app</a>.</p>
+            <p>Email <a className="text-mm-brand underline" href="mailto:d29chanda@gmail.com">d29chanda@gmail.com</a>.</p>
           </section>
         </article>
       </div>
