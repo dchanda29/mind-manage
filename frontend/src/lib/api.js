@@ -39,4 +39,11 @@ export const api = {
       .then((r) => r.data),
   getPaymentStatus: (sessionId) =>
     client.get(`/payments/status/${sessionId}`).then((r) => r.data),
+  openBillingPortal: (return_url) =>
+    client
+      .post("/subscription/portal", { return_url })
+      .then((r) => r.data),
+
+  // Engagement
+  getStreak: () => client.get("/streak").then((r) => r.data),
 };

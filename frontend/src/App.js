@@ -9,6 +9,8 @@ import Chat from "@/pages/Chat";
 import Pricing from "@/pages/Pricing";
 import BillingSuccess from "@/pages/BillingSuccess";
 import BillingCancel from "@/pages/BillingCancel";
+import Terms from "@/pages/Terms";
+import Privacy from "@/pages/Privacy";
 
 // Synchronous fragment check - runs on every render BEFORE Routes evaluate.
 // Prevents race condition with ProtectedRoute on OAuth return.
@@ -60,6 +62,8 @@ function AppRouter() {
           </ProtectedRoute>
         }
       />
+      <Route path="/legal/terms" element={<Terms />} />
+      <Route path="/legal/privacy" element={<Privacy />} />
       <Route path="*" element={<Login />} />
     </Routes>
   );

@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { Brain, Ear, LogOut, Sparkles, Trash2, ArrowRight, Lock } from "lucide-react";
+import { Brain, Ear, LogOut, Sparkles, Trash2, ArrowRight, Lock, Flame } from "lucide-react";
 
 function formatRelative(dt) {
   if (!dt) return "";
@@ -19,6 +19,7 @@ export default function Home() {
   const [quote, setQuote] = useState(null);
   const [chats, setChats] = useState([]);
   const [sub, setSub] = useState(null);
+  const [streak, setStreak] = useState(null);
   const [creating, setCreating] = useState(false);
   const navigate = useNavigate();
 
@@ -26,6 +27,7 @@ export default function Home() {
     api.getWelcomeQuote().then(setQuote).catch(() => {});
     refreshChats();
     api.getSubStatus().then(setSub).catch(() => {});
+    api.getStreak().then(setStreak).catch(() => {});
   }, []);
 
   const refreshChats = () => {
@@ -125,7 +127,7 @@ export default function Home() {
 
         {/* Quote */}
         {quote && (
-          <blockquote className="mb-9 mm-fadein" data-testid="quote-card">
+          <blockquote className="mb-6 mm-fadein" data-testid="quote-card">
             <p className="font-serif-mm italic text-xl leading-snug text-mm-primary">
               &ldquo;{quote.text}&rdquo;
             </p>
@@ -133,6 +135,22 @@ export default function Home() {
               — {quote.author}
             </p>
           </blockquote>
+        )}
+
+        {/* Streak */}
+        {streak && streak.streak > 0 && (
+          <div
+            className="flex items-center gap-2.5 mb-9 mm-fadein"
+            data-testid="streak-widget"
+          >
+            <Flame size={16} className="text-mm-brand" />
+            <p className="text-sm text-mm-primary">
+              <span className="font-medium">Day {streak.streak}</span> of taking care of you
+              {!streak.active_today && (
+                <span className="text-mm-secondary"> · check in today to keep it going</span>
+              )}
+            </p>
+          </div>
         )}
 
         {/* Mode picker */}
@@ -226,6 +244,13 @@ export default function Home() {
           MindManage is supportive guidance, not a medical service. In a crisis,
           please contact 988 (US), iCall +91 9152987821 (India), Samaritans 116 123 (UK), or local emergency services.
         </p>
+        <div className="flex gap-4 mt-4 text-[11px] text-mm-secondary">
+          <Link to="/legal/terms" data-testid="footer-terms" className="hover:text-mm-brand">Terms</Link>
+          <Link to="/legal/privacy" data-testid="footer-privacy" className="hover:text-mm-brand">Privacy</Link>
+          {sub?.state === "active" && (
+            <Link to="/pricing" data-testid="footer-manage" className="hover:text-mm-brand">Manage subscription</Link>
+          )}
+        </div>
       </div>
     </div>
   );

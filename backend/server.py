@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 from datetime import datetime, timezone, timedelta
 
+import stripe as stripe_sdk
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from emergentintegrations.payments.stripe.checkout import (
     StripeCheckout,
@@ -395,6 +396,79 @@ async def subscription_status(request: Request):
         "until": _to_iso(until) if until else None,
         "has_access": state in ("active", "trial"),
     }
+
+
+@api.post("/subscription/portal")
+async def subscription_portal(request: Request):
+    """Create a Stripe Billing Portal session so users can self-manage / cancel."""
+    user = await require_user(request)
+    if not STRIPE_API_KEY:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    body = await request.json()
+    return_url = (body.get("return_url") or "").rstrip("/")
+    if not return_url:
+        raise HTTPException(status_code=400, detail="return_url required")
+
+    # Find the most recent paid transaction to locate the Stripe customer
+    txn = await db.payment_transactions.find_one(
+        {"user_id": user.user_id, "credited": True},
+        {"_id": 0},
+        sort=[("credited_at", -1)],
+    )
+    if not txn:
+        raise HTTPException(status_code=404, detail="No active subscription found")
+
+    stripe_sdk.api_key = STRIPE_API_KEY
+    try:
+        sess = stripe_sdk.checkout.Session.retrieve(txn["session_id"])
+        customer_id = sess.get("customer")
+        if not customer_id:
+            raise HTTPException(status_code=404, detail="No customer on file")
+        portal = stripe_sdk.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=return_url,
+        )
+        return {"url": portal.url}
+    except stripe_sdk.error.StripeError as e:
+        logger.warning("Billing portal error: %s", e)
+        raise HTTPException(status_code=502, detail="Stripe error")
+
+
+@api.get("/streak")
+async def streak(request: Request):
+    """Daily check-in streak: count consecutive UTC days where user had any chat activity, ending today or yesterday."""
+    user = await require_user(request)
+    docs = await db.chats.find(
+        {"user_id": user.user_id},
+        {"_id": 0, "updated_at": 1, "created_at": 1, "messages": 1},
+    ).to_list(length=200)
+
+    days = set()
+    for d in docs:
+        # Use updated_at and any message timestamps for accurate per-day usage
+        for ts in [d.get("updated_at"), d.get("created_at")]:
+            dt = _parse_dt(ts)
+            if dt:
+                days.add(dt.date())
+        for m in d.get("messages", []) or []:
+            dt = _parse_dt(m.get("created_at"))
+            if dt:
+                days.add(dt.date())
+
+    today = _now().date()
+    yesterday = today - timedelta(days=1)
+    if today in days:
+        cursor = today
+    elif yesterday in days:
+        cursor = yesterday
+    else:
+        return {"streak": 0, "active_today": False}
+
+    count = 0
+    while cursor in days:
+        count += 1
+        cursor = cursor - timedelta(days=1)
+    return {"streak": count, "active_today": today in days}
 
 
 # ---------- Routes: Chats ----------

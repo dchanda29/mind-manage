@@ -67,6 +67,10 @@ export default function Login() {
             <br />
             We are not a substitute for a clinician.
           </p>
+          <div className="flex justify-center gap-4 mt-3 text-[11px] text-mm-secondary">
+            <a href="/legal/terms" data-testid="login-terms-link" className="hover:text-mm-brand">Terms</a>
+            <a href="/legal/privacy" data-testid="login-privacy-link" className="hover:text-mm-brand">Privacy</a>
+          </div>
         </div>
       </div>
     </div>

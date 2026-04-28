@@ -19,7 +19,7 @@ Mental wellbeing & AI therapy bot. Free 1-day trial then weekly/monthly/annual p
 - **Crisis safety**: Keyword detection short-circuits LLM and returns helplines (988, iCall, Samaritans, findahelpline) BEFORE LLM is called. LLM system prompts also enforce safety as defense-in-depth.
 
 ## Implemented (✅ tested 100%)
-**Date: 2026-04-28**
+**Date: 2026-04-28 (initial backend)**
 - ✅ Health, welcome quote rotator (10 curated quotes)
 - ✅ Emergent Google OAuth — session exchange, /auth/me, logout
 - ✅ Chat CRUD: list, create, get full, delete (+ max-5 enforcement)
@@ -30,9 +30,23 @@ Mental wellbeing & AI therapy bot. Free 1-day trial then weekly/monthly/annual p
 - ✅ Subscription gating (402 on expired trial)
 - ✅ MongoDB indexes for fast lookups, no `_id` leakage anywhere
 
-## Backlog (P0)
-- [ ] **Frontend (React, dusty-lavender palette)** — login screen, welcome+quote, mode picker, chat UI, subscription page, billing success/cancel, AuthCallback, ProtectedRoute.
-- [ ] Stripe billing portal link (manage/cancel sub).
+**Date: 2026-04-28 (frontend MVP)**
+- ✅ React FE with dusty-lavender palette, Spectral + Figtree fonts, mobile-first (max-w-md)
+- ✅ Login screen with welcome quote + calm-room hero image
+- ✅ AuthCallback handler (synchronous fragment check, no race with ProtectedRoute)
+- ✅ Home dashboard: greeting, sub status, quote, asymmetric mode picker, recent chats list, delete
+- ✅ Chat screen with crisis banner, typing indicator, sticky input, lavender/cream bubbles
+- ✅ Pricing page with 3 plan cards + "Recommended" badge on monthly
+- ✅ BillingSuccess (polling) + BillingCancel pages
+
+**Date: 2026-04-28 (production-readiness pass)**
+- ✅ Terms of Service + Privacy Policy pages (`/legal/terms`, `/legal/privacy`)
+- ✅ Stripe Billing Portal integration (`/api/subscription/portal` + "Manage subscription" button)
+- ✅ Daily check-in **streak counter** widget on Home (`/api/streak`)
+- ✅ `.env.example` for both backend and frontend
+- ✅ `/app/README.md` with full deployment checklist (Atlas, live Stripe, OAuth domain whitelist, custom domain via Entri)
+- ✅ Footer legal links on Login + Home + active-sub manage link
+- ✅ CORS already env-driven via `CORS_ORIGINS`
 
 ## Backlog (P1)
 - [ ] Mood tracker / daily check-in
