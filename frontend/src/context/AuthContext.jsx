@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { api, tokenStore } from "@/lib/api";
 
 const AuthContext = createContext(null);
 
@@ -8,19 +8,24 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
+    if (!tokenStore.get()) {
+      setUser(null);
+      return null;
+    }
     try {
       const u = await api.me();
       setUser(u);
       return u;
     } catch {
       setUser(null);
+      tokenStore.clear();
       return null;
     }
   }, []);
 
   useEffect(() => {
-    // CRITICAL: skip /auth/me when returning from Emergent OAuth so AuthCallback runs first.
-    if (window.location.hash?.includes("session_id=")) {
+    // Skip /auth/me if returning from OAuth — AuthCallback will handle token first
+    if (window.location.hash?.includes("token=")) {
       setLoading(false);
       return;
     }
@@ -31,6 +36,7 @@ export function AuthProvider({ children }) {
     try {
       await api.logout();
     } catch {}
+    tokenStore.clear();
     setUser(null);
   };
 

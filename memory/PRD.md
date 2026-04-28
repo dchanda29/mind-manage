@@ -44,9 +44,20 @@ Mental wellbeing & AI therapy bot. Free 1-day trial then weekly/monthly/annual p
 - ✅ Stripe Billing Portal integration (`/api/subscription/portal` + "Manage subscription" button)
 - ✅ Daily check-in **streak counter** widget on Home (`/api/streak`)
 - ✅ `.env.example` for both backend and frontend
-- ✅ `/app/README.md` with full deployment checklist (Atlas, live Stripe, OAuth domain whitelist, custom domain via Entri)
+- ✅ `/app/README.md` with full deployment checklist
 - ✅ Footer legal links on Login + Home + active-sub manage link
 - ✅ CORS already env-driven via `CORS_ORIGINS`
+
+**Date: 2026-04-28 (portable / free-deployment refactor)**
+- ✅ **Replaced** `emergentintegrations` LLM with direct **Google Gemini 2.5 Flash** SDK (`google-genai`) — needs `GEMINI_API_KEY` from aistudio.google.com
+- ✅ **Replaced** Emergent OAuth with **standard Google OAuth 2.0** authorization-code flow (`/api/auth/google/start`, `/api/auth/google/callback`) — needs `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`
+- ✅ **Replaced** `emergentintegrations` Stripe wrapper with direct `stripe` Python SDK (Checkout + Billing Portal + Webhook with `stripe.Webhook.construct_event` signature verification)
+- ✅ **Bearer-token auth** (localStorage on FE) for cross-origin Render↔Vercel compatibility (cookie fallback retained)
+- ✅ FE Login + AuthCallback rewritten for new flow (URL fragment `#token=...` handoff)
+- ✅ `/app/backend/render.yaml` (Render Blueprint), `/app/frontend/vercel.json`, `gunicorn` added
+- ✅ `/app/DEPLOYMENT.md` — full step-by-step free-tier deploy guide (Atlas + Render + Vercel + Gemini + Google Cloud OAuth + Stripe)
+- ✅ Lazy LLM client init so server boots with empty keys (for inspection); endpoints 500 cleanly when keys missing
+- ✅ `oauth_states` collection with TTL index (auto-clean stale states after 10 min)
 
 ## Backlog (P1)
 - [ ] Mood tracker / daily check-in

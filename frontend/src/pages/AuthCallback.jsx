@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, tokenStore } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 
 export default function AuthCallback() {
@@ -13,32 +13,32 @@ export default function AuthCallback() {
     processed.current = true;
 
     const hash = window.location.hash || "";
-    const match = hash.match(/session_id=([^&]+)/);
-    const sessionId = match ? decodeURIComponent(match[1]) : null;
+    const match = hash.match(/token=([^&]+)/);
+    const token = match ? decodeURIComponent(match[1]) : null;
 
-    if (!sessionId) {
+    if (!token) {
       navigate("/", { replace: true });
       return;
     }
 
-    (async () => {
-      try {
-        const user = await api.exchangeSession(sessionId);
-        setUser(user);
-        // Clean the URL
-        window.history.replaceState({}, "", "/home");
-        navigate("/home", { replace: true, state: { user } });
-      } catch (e) {
+    tokenStore.set(token);
+    // Clean URL fragment
+    window.history.replaceState({}, "", "/home");
+
+    api.me()
+      .then((u) => {
+        setUser(u);
+        navigate("/home", { replace: true, state: { user: u } });
+      })
+      .catch(() => {
+        tokenStore.clear();
         navigate("/", { replace: true });
-      }
-    })();
+      });
   }, [navigate, setUser]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-mm" data-testid="auth-callback">
-      <p className="font-serif-mm italic text-mm-secondary mm-pulse">
-        Preparing your space...
-      </p>
+      <p className="font-serif-mm italic text-mm-secondary mm-pulse">Preparing your space…</p>
     </div>
   );
 }

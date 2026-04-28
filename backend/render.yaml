@@ -1,0 +1,33 @@
+# Render Blueprint for MindManage backend.
+# Push this file along with your backend code to GitHub, then in Render → New → Blueprint → connect repo.
+services:
+  - type: web
+    name: mindmanage-backend
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn server:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: MONGO_URL
+        sync: false       # paste in Render dashboard (MongoDB Atlas connection string)
+      - key: DB_NAME
+        value: mindmanage_prod
+      - key: CORS_ORIGINS
+        sync: false       # e.g. https://mindmanage.vercel.app
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: BACKEND_PUBLIC_URL
+        sync: false       # e.g. https://mindmanage-backend.onrender.com
+      - key: FRONTEND_PUBLIC_URL
+        sync: false       # e.g. https://mindmanage.vercel.app
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: STRIPE_API_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false

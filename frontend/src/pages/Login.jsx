@@ -7,15 +7,28 @@ const BG_IMAGE =
 
 export default function Login() {
   const [quote, setQuote] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     api.getWelcomeQuote().then(setQuote).catch(() => {});
+    // Surface any auth_error returned by the OAuth callback redirect
+    const params = new URLSearchParams(window.location.search);
+    const e = params.get("auth_error");
+    if (e) setError("Sign-in failed. Please try again.");
   }, []);
 
-  const handleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    const redirectUrl = window.location.origin + "/home";
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+  const handleLogin = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const finalRedirect = window.location.origin + "/auth/callback";
+      const { url } = await api.startGoogleAuth(finalRedirect);
+      window.location.href = url;
+    } catch {
+      setError("Couldn't start sign-in. Please try again.");
+      setLoading(false);
+    }
   };
 
   return (
@@ -29,9 +42,7 @@ export default function Login() {
 
       <div className="relative z-10 max-w-md mx-auto min-h-screen flex flex-col px-7 pt-16 pb-10">
         <div className="mm-fadein">
-          <p className="text-xs uppercase tracking-[0.22em] text-mm-secondary">
-            MindManage
-          </p>
+          <p className="text-xs uppercase tracking-[0.22em] text-mm-secondary">MindManage</p>
           <h1 className="font-serif-mm text-4xl sm:text-5xl tracking-tight leading-[1.05] mt-4 text-mm-primary">
             A quiet place
             <br />
@@ -41,10 +52,7 @@ export default function Login() {
 
         <div className="mt-auto mm-fadein">
           {quote && (
-            <blockquote
-              className="mm-card p-6 mb-6"
-              data-testid="welcome-quote"
-            >
+            <blockquote className="mm-card p-6 mb-6" data-testid="welcome-quote">
               <p className="font-serif-mm italic text-lg leading-relaxed text-mm-primary">
                 &ldquo;{quote.text}&rdquo;
               </p>
@@ -54,13 +62,18 @@ export default function Login() {
             </blockquote>
           )}
 
+          {error && (
+            <p className="text-xs text-[#8C5555] text-center mb-3" data-testid="login-error">{error}</p>
+          )}
+
           <button
             onClick={handleLogin}
+            disabled={loading}
             data-testid="google-login-button"
-            className="mm-btn-primary w-full"
+            className="mm-btn-primary w-full disabled:opacity-60"
           >
             <LogIn size={18} />
-            Continue with Google
+            {loading ? "Opening Google…" : "Continue with Google"}
           </button>
           <p className="text-xs text-center text-mm-secondary mt-4 leading-relaxed">
             1 day free. Then weekly, monthly, or annual.

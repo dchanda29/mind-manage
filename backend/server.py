@@ -1,9 +1,11 @@
 """
-MindManage - Mental Wellbeing & AI Therapy Backend
-FastAPI + MongoDB + Emergent LLM (Claude Sonnet 4.5) + Stripe + Emergent Google Auth
+MindManage - Mental Wellbeing & AI Therapy Backend (Portable / Self-hosted edition)
+
+Stack: FastAPI + MongoDB (Motor) + Google Gemini + standard Google OAuth + Stripe.
+No Emergent platform dependencies. Deployable on Render, Fly.io, Railway, Docker, anywhere.
 """
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Cookie, Depends
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -11,18 +13,17 @@ import os
 import logging
 import random
 import uuid
+import secrets
+import urllib.parse
 import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 from datetime import datetime, timezone, timedelta
 
-import stripe as stripe_sdk
-from emergentintegrations.llm.chat import LlmChat, UserMessage
-from emergentintegrations.payments.stripe.checkout import (
-    StripeCheckout,
-    CheckoutSessionRequest,
-)
+import stripe
+from google import genai
+from google.genai import types as genai_types
 
 # ---------- Setup ----------
 ROOT_DIR = Path(__file__).parent
@@ -33,15 +34,38 @@ logger = logging.getLogger("mindmanage")
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
-STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY")
-EMERGENT_AUTH_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+# Public URL of THIS backend (e.g. https://mindmanage-be.onrender.com). Used for OAuth redirect_uri.
+BACKEND_PUBLIC_URL = os.environ.get("BACKEND_PUBLIC_URL", "").rstrip("/")
+# Public URL of the frontend (e.g. https://mindmanage.vercel.app). Used for post-auth redirect.
+FRONTEND_PUBLIC_URL = os.environ.get("FRONTEND_PUBLIC_URL", "").rstrip("/")
 
-client = AsyncIOMotorClient(MONGO_URL)
-db = client[DB_NAME]
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+GOOGLE_OAUTH_SCOPES = "openid email profile"
+
+mongo_client = AsyncIOMotorClient(MONGO_URL)
+db = mongo_client[DB_NAME]
 
 app = FastAPI(title="MindManage API")
 api = APIRouter(prefix="/api")
+
+# Lazy LLM client (initialized on first use so server boots without a key for inspection)
+_genai_client = None
+
+def get_genai_client():
+    global _genai_client
+    if _genai_client is None:
+        if not GEMINI_API_KEY:
+            raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+        _genai_client = genai.Client(api_key=GEMINI_API_KEY)
+    return _genai_client
+
 
 # ---------- Constants ----------
 MAX_SAVED_CHATS = 5
@@ -66,7 +90,6 @@ WELCOME_QUOTES = [
     {"text": "You, yourself, as much as anybody in the entire universe, deserve your love and affection.", "author": "Buddha"},
 ]
 
-# Crisis keyword detection (defense-in-depth alongside LLM-based detection)
 CRISIS_KEYWORDS = [
     "suicide", "kill myself", "end my life", "want to die", "killing myself",
     "self harm", "self-harm", "cut myself", "cutting myself",
@@ -191,7 +214,7 @@ def _to_iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
 
-def _parse_dt(value) -> Optional[datetime]:
+def _parse_dt(value):
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -231,12 +254,13 @@ def _detect_crisis(text: str) -> bool:
 
 
 async def _get_user_by_session(request: Request) -> Optional[User]:
-    """Read session_token from cookie or Authorization header, return user or None."""
-    token = request.cookies.get("session_token")
+    """Bearer header is the primary mechanism (cross-origin friendly). Cookie fallback supported."""
+    token = None
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        token = auth[7:].strip()
     if not token:
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth[7:]
+        token = request.cookies.get("session_token")
     if not token:
         return None
 
@@ -269,19 +293,26 @@ async def require_active_user(request: Request) -> User:
 
 
 async def _enforce_chat_limit(user_id: str):
-    """Keep at most MAX_SAVED_CHATS chats per user — delete oldest."""
     chats = await db.chats.find({"user_id": user_id}, {"_id": 0, "chat_id": 1, "updated_at": 1}) \
-        .sort("updated_at", -1).to_list(length=100)
+        .sort("updated_at", -1).to_list(length=200)
     if len(chats) > MAX_SAVED_CHATS:
-        to_delete = chats[MAX_SAVED_CHATS:]
-        ids = [c["chat_id"] for c in to_delete]
+        ids = [c["chat_id"] for c in chats[MAX_SAVED_CHATS:]]
         await db.chats.delete_many({"chat_id": {"$in": ids}})
 
 
 # ---------- Routes: Health & Quotes ----------
 @api.get("/health")
 async def health():
-    return {"status": "ok", "service": "mindmanage", "time": _to_iso(_now())}
+    return {
+        "status": "ok",
+        "service": "mindmanage",
+        "time": _to_iso(_now()),
+        "config": {
+            "gemini": bool(GEMINI_API_KEY),
+            "stripe": bool(STRIPE_API_KEY),
+            "google_oauth": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
+        },
+    }
 
 
 @api.get("/quotes/welcome")
@@ -289,29 +320,64 @@ async def welcome_quote():
     return random.choice(WELCOME_QUOTES)
 
 
-# ---------- Routes: Auth (Emergent Google) ----------
-@api.post("/auth/session")
-async def auth_session(request: Request, response: Response):
-    """
-    Exchange Emergent session_id (from URL fragment after Google auth) for our session_token.
-    Frontend POSTs { session_id }. Backend calls Emergent /session-data, upserts user, sets cookie.
-    """
-    body = await request.json()
-    session_id = body.get("session_id")
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id required")
+# ---------- Routes: Standard Google OAuth ----------
+@api.get("/auth/google/start")
+async def auth_google_start(redirect: Optional[str] = None):
+    if not (GOOGLE_CLIENT_ID and BACKEND_PUBLIC_URL):
+        raise HTTPException(status_code=500, detail="OAuth not configured")
+    state = secrets.token_urlsafe(32)
+    final_redirect = redirect or (FRONTEND_PUBLIC_URL + "/auth/callback")
+    await db.oauth_states.insert_one({
+        "state": state,
+        "redirect": final_redirect,
+        "created_at": _to_iso(_now()),
+    })
+    params = {
+        "response_type": "code",
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": f"{BACKEND_PUBLIC_URL}/api/auth/google/callback",
+        "scope": GOOGLE_OAUTH_SCOPES,
+        "state": state,
+        "prompt": "select_account",
+        "access_type": "online",
+        "include_granted_scopes": "true",
+    }
+    return {"url": f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"}
 
-    # REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+
+@api.get("/auth/google/callback")
+async def auth_google_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    if error:
+        return RedirectResponse(f"{FRONTEND_PUBLIC_URL}/?auth_error={urllib.parse.quote(error)}")
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code/state")
+
+    state_doc = await db.oauth_states.find_one_and_delete({"state": state})
+    if not state_doc:
+        raise HTTPException(status_code=400, detail="Invalid or expired state")
+
+    # Exchange code for tokens
     async with httpx.AsyncClient(timeout=15.0) as cli:
-        resp = await cli.get(EMERGENT_AUTH_URL, headers={"X-Session-ID": session_id})
-    if resp.status_code != 200:
-        raise HTTPException(status_code=401, detail="Invalid session_id")
+        token_resp = await cli.post(GOOGLE_TOKEN_URL, data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": f"{BACKEND_PUBLIC_URL}/api/auth/google/callback",
+            "grant_type": "authorization_code",
+        })
+        if token_resp.status_code != 200:
+            logger.warning("Google token exchange failed: %s", token_resp.text)
+            return RedirectResponse(f"{FRONTEND_PUBLIC_URL}/?auth_error=token_exchange_failed")
+        access_token = token_resp.json().get("access_token")
 
-    data = resp.json()
-    email = data["email"]
-    name = data.get("name") or email.split("@")[0]
-    picture = data.get("picture")
-    session_token = data["session_token"]
+        userinfo_resp = await cli.get(GOOGLE_USERINFO_URL, headers={"Authorization": f"Bearer {access_token}"})
+        if userinfo_resp.status_code != 200:
+            return RedirectResponse(f"{FRONTEND_PUBLIC_URL}/?auth_error=userinfo_failed")
+        info = userinfo_resp.json()
+
+    email = info["email"]
+    name = info.get("name") or email.split("@")[0]
+    picture = info.get("picture")
 
     # Upsert user
     existing = await db.users.find_one({"email": email}, {"_id": 0})
@@ -337,7 +403,8 @@ async def auth_session(request: Request, response: Response):
             "subscription_end": None,
         })
 
-    # Store session (7-day expiry, matching Emergent token TTL)
+    # Create our own session token (opaque, random, cross-origin friendly)
+    session_token = "mm_" + secrets.token_urlsafe(40)
     expires_at = now + timedelta(days=7)
     await db.user_sessions.insert_one({
         "user_id": user_id,
@@ -346,17 +413,9 @@ async def auth_session(request: Request, response: Response):
         "created_at": _to_iso(now),
     })
 
-    response.set_cookie(
-        key="session_token",
-        value=session_token,
-        max_age=7 * 24 * 60 * 60,
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="none",
-    )
-    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-    return _user_from_doc(user_doc).model_dump(mode="json")
+    # Hand off to FE via URL fragment (token is not exposed in server logs / Referer)
+    redirect_to = state_doc.get("redirect") or (FRONTEND_PUBLIC_URL + "/auth/callback")
+    return RedirectResponse(f"{redirect_to}#token={urllib.parse.quote(session_token)}")
 
 
 @api.get("/auth/me")
@@ -366,11 +425,11 @@ async def auth_me(request: Request):
 
 
 @api.post("/auth/logout")
-async def auth_logout(request: Request, response: Response):
-    token = request.cookies.get("session_token") or ""
+async def auth_logout(request: Request):
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:].strip() if auth.startswith("Bearer ") else request.cookies.get("session_token", "")
     if token:
         await db.user_sessions.delete_one({"session_token": token})
-    response.delete_cookie("session_token", path="/")
     return {"ok": True}
 
 
@@ -409,7 +468,6 @@ async def subscription_portal(request: Request):
     if not return_url:
         raise HTTPException(status_code=400, detail="return_url required")
 
-    # Find the most recent paid transaction to locate the Stripe customer
     txn = await db.payment_transactions.find_one(
         {"user_id": user.user_id, "credited": True},
         {"_id": 0},
@@ -418,25 +476,24 @@ async def subscription_portal(request: Request):
     if not txn:
         raise HTTPException(status_code=404, detail="No active subscription found")
 
-    stripe_sdk.api_key = STRIPE_API_KEY
+    stripe.api_key = STRIPE_API_KEY
     try:
-        sess = stripe_sdk.checkout.Session.retrieve(txn["session_id"])
+        sess = stripe.checkout.Session.retrieve(txn["session_id"])
         customer_id = sess.get("customer")
         if not customer_id:
             raise HTTPException(status_code=404, detail="No customer on file")
-        portal = stripe_sdk.billing_portal.Session.create(
+        portal = stripe.billing_portal.Session.create(
             customer=customer_id,
             return_url=return_url,
         )
         return {"url": portal.url}
-    except stripe_sdk.error.StripeError as e:
+    except stripe.error.StripeError as e:
         logger.warning("Billing portal error: %s", e)
         raise HTTPException(status_code=502, detail="Stripe error")
 
 
 @api.get("/streak")
 async def streak(request: Request):
-    """Daily check-in streak: count consecutive UTC days where user had any chat activity, ending today or yesterday."""
     user = await require_user(request)
     docs = await db.chats.find(
         {"user_id": user.user_id},
@@ -445,7 +502,6 @@ async def streak(request: Request):
 
     days = set()
     for d in docs:
-        # Use updated_at and any message timestamps for accurate per-day usage
         for ts in [d.get("updated_at"), d.get("created_at")]:
             dt = _parse_dt(ts)
             if dt:
@@ -520,11 +576,7 @@ async def get_chat(chat_id: str, request: Request):
     doc["updated_at"] = _parse_dt(doc["updated_at"])
     msgs = []
     for m in doc.get("messages", []):
-        msgs.append(ChatMessage(
-            role=m["role"],
-            content=m["content"],
-            created_at=_parse_dt(m["created_at"]),
-        ))
+        msgs.append(ChatMessage(role=m["role"], content=m["content"], created_at=_parse_dt(m["created_at"])))
     doc["messages"] = msgs
     return ChatSessionFull(**doc).model_dump(mode="json")
 
@@ -561,11 +613,12 @@ async def send_message(request: Request, payload: SendMessageRequest):
     else:
         try:
             assistant_text = await _llm_reply(
-                chat_id=payload.chat_id,
                 mode=chat_doc["mode"],
                 history=chat_doc.get("messages", []),
                 new_user_text=payload.text,
             )
+        except HTTPException:
+            raise
         except Exception as e:
             logger.exception("LLM error: %s", e)
             raise HTTPException(status_code=503, detail="AI service unavailable. Please try again.")
@@ -588,23 +641,35 @@ async def send_message(request: Request, payload: SendMessageRequest):
     )
 
 
-async def _llm_reply(chat_id: str, mode: str, history: list, new_user_text: str) -> str:
-    if not EMERGENT_LLM_KEY:
-        raise RuntimeError("EMERGENT_LLM_KEY missing")
+async def _llm_reply(mode: str, history: list, new_user_text: str) -> str:
+    """Call Gemini 2.5 Flash with system prompt + multi-turn history."""
+    client = get_genai_client()
     system_prompt = SYSTEM_PROMPTS[mode]
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=chat_id,
-        system_message=system_prompt,
-    ).with_model("anthropic", "claude-sonnet-4-5-20250929")
-    # Replay history to keep context (emergentintegrations LlmChat keeps state per session_id internally,
-    # but we re-send to be deterministic across server restarts)
-    # For efficiency, only send the new message; library tracks per session_id.
-    response = await chat.send_message(UserMessage(text=new_user_text))
-    return response if isinstance(response, str) else str(response)
+
+    # Convert our DB history to Gemini Content format
+    contents = []
+    for m in history:
+        role = "user" if m["role"] == "user" else "model"
+        contents.append(genai_types.Content(role=role, parts=[genai_types.Part.from_text(text=m["content"])]))
+    contents.append(genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=new_user_text)]))
+
+    config = genai_types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        temperature=0.7,
+        max_output_tokens=1024,
+    )
+
+    # google-genai client.aio for async
+    resp = await client.aio.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=contents,
+        config=config,
+    )
+    text = (resp.text or "").strip()
+    return text or "I'm here. Could you say a little more about what's going on?"
 
 
-# ---------- Routes: Stripe Payments ----------
+# ---------- Routes: Stripe Payments (direct stripe library) ----------
 @api.post("/payments/checkout", response_model=CheckoutResponse)
 async def create_checkout(request: Request, payload: CheckoutRequest):
     user = await require_user(request)
@@ -614,47 +679,75 @@ async def create_checkout(request: Request, payload: CheckoutRequest):
         raise HTTPException(status_code=500, detail="Stripe not configured")
 
     pkg = SUBSCRIPTION_PACKAGES[payload.package_id]
-
-    # Build URLs from frontend's origin (NEVER hardcoded)
     origin = payload.origin_url.rstrip("/")
     success_url = f"{origin}/billing/success?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{origin}/billing/cancel"
 
-    host_url = str(request.base_url).rstrip("/")
-    webhook_url = f"{host_url}/api/webhook/stripe"
-    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
-
-    metadata = {
-        "user_id": user.user_id,
-        "email": user.email,
-        "package_id": payload.package_id,
-        "source": "mindmanage_subscription",
-    }
-
-    req = CheckoutSessionRequest(
-        amount=float(pkg["amount"]),
-        currency=pkg["currency"],
-        success_url=success_url,
-        cancel_url=cancel_url,
-        metadata=metadata,
-    )
-    session = await stripe_checkout.create_checkout_session(req)
+    stripe.api_key = STRIPE_API_KEY
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": pkg["currency"],
+                    "product_data": {
+                        "name": f"MindManage {pkg['label']}",
+                        "description": f"{pkg['days']}-day access",
+                    },
+                    "unit_amount": int(round(pkg["amount"] * 100)),
+                },
+                "quantity": 1,
+            }],
+            success_url=success_url,
+            cancel_url=cancel_url,
+            customer_email=user.email,
+            metadata={
+                "user_id": user.user_id,
+                "email": user.email,
+                "package_id": payload.package_id,
+                "source": "mindmanage_subscription",
+            },
+        )
+    except stripe.error.StripeError as e:
+        logger.warning("Stripe error: %s", e)
+        raise HTTPException(status_code=502, detail="Stripe error")
 
     await db.payment_transactions.insert_one({
-        "session_id": session.session_id,
+        "session_id": session.id,
         "user_id": user.user_id,
         "email": user.email,
         "package_id": payload.package_id,
         "amount": float(pkg["amount"]),
         "currency": pkg["currency"],
-        "metadata": metadata,
+        "metadata": dict(session.metadata or {}),
         "payment_status": "initiated",
         "status": "open",
         "credited": False,
         "created_at": _to_iso(_now()),
     })
+    return CheckoutResponse(url=session.url, session_id=session.id)
 
-    return CheckoutResponse(url=session.url, session_id=session.session_id)
+
+async def _credit_subscription(user_id: str, package_id: str):
+    pkg = SUBSCRIPTION_PACKAGES.get(package_id)
+    if not pkg:
+        return
+    now = _now()
+    udoc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "subscription_end": 1})
+    if not udoc:
+        return
+    current_end = _parse_dt(udoc.get("subscription_end"))
+    base = current_end if current_end and current_end > now else now
+    new_end = base + timedelta(days=pkg["days"])
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "subscription_status": "active",
+            "subscription_plan": package_id,
+            "subscription_end": _to_iso(new_end),
+        }},
+    )
 
 
 @api.get("/payments/status/{session_id}", response_model=PaymentStatusResponse)
@@ -663,50 +756,37 @@ async def payment_status(session_id: str, request: Request):
     txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
     if not txn or txn["user_id"] != user.user_id:
         raise HTTPException(status_code=404, detail="Transaction not found")
-
     if not STRIPE_API_KEY:
         raise HTTPException(status_code=500, detail="Stripe not configured")
 
-    host_url = str(request.base_url).rstrip("/")
-    webhook_url = f"{host_url}/api/webhook/stripe"
-    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
-    status = await stripe_checkout.get_checkout_status(session_id)
+    stripe.api_key = STRIPE_API_KEY
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+    except stripe.error.StripeError as e:
+        logger.warning("Stripe retrieve error: %s", e)
+        raise HTTPException(status_code=502, detail="Stripe error")
 
     update = {
-        "payment_status": status.payment_status,
-        "status": status.status,
-        "amount_total": status.amount_total,
-        "currency": status.currency,
+        "payment_status": session.payment_status,
+        "status": session.status,
+        "amount_total": session.amount_total or 0,
+        "currency": session.currency,
         "updated_at": _to_iso(_now()),
     }
     await db.payment_transactions.update_one({"session_id": session_id}, {"$set": update})
 
-    # Idempotently credit the subscription
-    if status.payment_status == "paid" and not txn.get("credited"):
-        pkg = SUBSCRIPTION_PACKAGES.get(txn["package_id"])
-        if pkg:
-            now = _now()
-            current_end = _parse_dt((await db.users.find_one({"user_id": user.user_id}, {"_id": 0, "subscription_end": 1})).get("subscription_end"))
-            base = current_end if current_end and current_end > now else now
-            new_end = base + timedelta(days=pkg["days"])
-            await db.users.update_one(
-                {"user_id": user.user_id},
-                {"$set": {
-                    "subscription_status": "active",
-                    "subscription_plan": txn["package_id"],
-                    "subscription_end": _to_iso(new_end),
-                }},
-            )
-            await db.payment_transactions.update_one(
-                {"session_id": session_id},
-                {"$set": {"credited": True, "credited_at": _to_iso(now)}},
-            )
+    if session.payment_status == "paid" and not txn.get("credited"):
+        await _credit_subscription(user.user_id, txn["package_id"])
+        await db.payment_transactions.update_one(
+            {"session_id": session_id},
+            {"$set": {"credited": True, "credited_at": _to_iso(_now())}},
+        )
 
     return PaymentStatusResponse(
-        status=status.status,
-        payment_status=status.payment_status,
-        amount_total=float(status.amount_total) / 100.0,
-        currency=status.currency,
+        status=session.status or "unknown",
+        payment_status=session.payment_status or "unknown",
+        amount_total=float(session.amount_total or 0) / 100.0,
+        currency=session.currency or "usd",
         package_id=txn.get("package_id"),
     )
 
@@ -716,48 +796,34 @@ async def stripe_webhook(request: Request):
     if not STRIPE_API_KEY:
         return JSONResponse({"ok": False, "error": "stripe not configured"}, status_code=500)
     body = await request.body()
-    sig = request.headers.get("Stripe-Signature", "")
-    host_url = str(request.base_url).rstrip("/")
-    webhook_url = f"{host_url}/api/webhook/stripe"
-    stripe_checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+    sig_header = request.headers.get("stripe-signature", "")
+    stripe.api_key = STRIPE_API_KEY
     try:
-        evt = await stripe_checkout.handle_webhook(body, sig)
+        if STRIPE_WEBHOOK_SECRET:
+            event = stripe.Webhook.construct_event(body, sig_header, STRIPE_WEBHOOK_SECRET)
+        else:
+            # Dev: accept unsigned payloads (NEVER do this in production)
+            import json
+            event = stripe.Event.construct_from(json.loads(body.decode()), STRIPE_API_KEY)
     except Exception as e:
-        logger.warning("Webhook handle error: %s", e)
+        logger.warning("Webhook verification failed: %s", e)
         return JSONResponse({"ok": False}, status_code=400)
 
-    txn = await db.payment_transactions.find_one({"session_id": evt.session_id}, {"_id": 0})
-    if not txn:
-        return {"ok": True}
-
-    await db.payment_transactions.update_one(
-        {"session_id": evt.session_id},
-        {"$set": {
-            "payment_status": evt.payment_status,
-            "last_event": evt.event_type,
-            "updated_at": _to_iso(_now()),
-        }},
-    )
-
-    if evt.payment_status == "paid" and not txn.get("credited"):
-        pkg = SUBSCRIPTION_PACKAGES.get(txn["package_id"])
-        if pkg:
-            now = _now()
-            udoc = await db.users.find_one({"user_id": txn["user_id"]}, {"_id": 0, "subscription_end": 1})
-            current_end = _parse_dt(udoc.get("subscription_end")) if udoc else None
-            base = current_end if current_end and current_end > now else now
-            new_end = base + timedelta(days=pkg["days"])
-            await db.users.update_one(
-                {"user_id": txn["user_id"]},
-                {"$set": {
-                    "subscription_status": "active",
-                    "subscription_plan": txn["package_id"],
-                    "subscription_end": _to_iso(new_end),
-                }},
-            )
+    if event["type"] in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+        session_obj = event["data"]["object"]
+        session_id = session_obj.get("id")
+        payment_status = session_obj.get("payment_status")
+        txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+        if txn and payment_status == "paid" and not txn.get("credited"):
+            await _credit_subscription(txn["user_id"], txn["package_id"])
             await db.payment_transactions.update_one(
-                {"session_id": evt.session_id},
-                {"$set": {"credited": True, "credited_at": _to_iso(now)}},
+                {"session_id": session_id},
+                {"$set": {
+                    "credited": True,
+                    "credited_at": _to_iso(_now()),
+                    "payment_status": payment_status,
+                    "last_event": event["type"],
+                }},
             )
 
     return {"ok": True}
@@ -766,10 +832,12 @@ async def stripe_webhook(request: Request):
 # ---------- App wiring ----------
 app.include_router(api)
 
+_cors_raw = os.environ.get("CORS_ORIGINS", "*")
+_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -777,7 +845,6 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
-    # Indexes for fast lookups
     await db.users.create_index("user_id", unique=True)
     await db.users.create_index("email", unique=True)
     await db.user_sessions.create_index("session_token", unique=True)
@@ -785,9 +852,10 @@ async def on_startup():
     await db.chats.create_index([("user_id", 1), ("updated_at", -1)])
     await db.chats.create_index("chat_id", unique=True)
     await db.payment_transactions.create_index("session_id", unique=True)
-    logger.info("MindManage backend ready.")
+    await db.oauth_states.create_index("created_at", expireAfterSeconds=600)  # auto-clean stale states
+    logger.info("MindManage backend ready (portable mode).")
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    client.close()
+    mongo_client.close()

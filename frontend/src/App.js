@@ -16,7 +16,7 @@ import Privacy from "@/pages/Privacy";
 // Prevents race condition with ProtectedRoute on OAuth return.
 function AppRouter() {
   const location = useLocation();
-  if (location.hash?.includes("session_id=")) {
+  if (location.hash?.includes("token=")) {
     return <AuthCallback />;
   }
   return (
@@ -64,6 +64,7 @@ function AppRouter() {
       />
       <Route path="/legal/terms" element={<Terms />} />
       <Route path="/legal/privacy" element={<Privacy />} />
+      <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="*" element={<Login />} />
     </Routes>
   );
