@@ -1,0 +1,130 @@
+{
+  "theme_and_archetype": {
+    "domain": "Mental Health & Wellbeing",
+    "theme": "Light",
+    "archetype": "Archetype 1: Organic & Earthy (Modified for User Preference)",
+    "vibe": "Calming, warm, human, tactile, safe. Avoid clinical or tech-heavy aesthetics.",
+    "forbidden_patterns": [
+      "Purple-on-white high-saturation gradients (AI slop)",
+      "Emojis for icons (use lucide-react instead)",
+      "Standard centered card grids",
+      "Inter, Roboto, Space Grotesk fonts"
+    ]
+  },
+  "typography": {
+    "font_families": {
+      "heading": "'Spectral', serif",
+      "body": "'Figtree', sans-serif"
+    },
+    "scales": {
+      "h1": "text-4xl sm:text-5xl tracking-tight leading-none font-medium",
+      "h2": "text-2xl sm:text-3xl tracking-tight leading-tight font-normal",
+      "h3": "text-xl sm:text-2xl leading-snug",
+      "body": "text-base leading-relaxed font-light",
+      "small": "text-sm tracking-wide text-secondary",
+      "overline": "text-xs uppercase tracking-[0.15em] font-medium"
+    },
+    "cdn_import": "@import url('https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500&family=Spectral:ital,wght@0,300;0,400;0,500;1,400&display=swap');"
+  },
+  "colors": {
+    "background": {
+      "default": "#FDFBF7",
+      "surface": "#FFFFFF",
+      "surface_alt": "#F4F1ED"
+    },
+    "brand": {
+      "primary": "#8A7E94",
+      "primary_hover": "#74697E",
+      "secondary": "#A9999C",
+      "accent": "#A3ACA0"
+    },
+    "text": {
+      "primary": "#2D282A",
+      "secondary": "#6B6366",
+      "inverse": "#FDFBF7"
+    },
+    "status": {
+      "crisis_bg": "#F5EBEB",
+      "crisis_text": "#8C5555"
+    }
+  },
+  "spacing_and_layout": {
+    "philosophy": "Generous Spacing (p-6, p-8), mobile-first bottom-nav orientation, optical alignment over strict geometric grids.",
+    "container": "max-w-md mx-auto min-h-screen relative bg-[#FDFBF7]",
+    "surfaces": {
+      "cards": "bg-white rounded-2xl p-6 shadow-[0_4px_24px_rgba(45,40,42,0.04)] border border-[#EBE8E3]",
+      "inputs": "bg-[#F4F1ED] rounded-xl border-none focus:ring-1 focus:ring-[#8A7E94]"
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-[#8A7E94] text-[#FDFBF7] rounded-full px-6 py-3 font-medium transition-transform hover:-translate-y-0.5 hover:shadow-lg hover:bg-[#74697E]",
+      "secondary": "bg-[#F4F1ED] text-[#2D282A] rounded-full px-6 py-3 font-medium transition-colors hover:bg-[#EBE8E3]"
+    },
+    "navigation": "Bottom-heavy or minimal sticky top header. Use Glassmorphism (backdrop-blur-xl bg-[#FDFBF7]/80) only when content scrolls beneath."
+  },
+  "views": {
+    "Auth_Landing": {
+      "layout": "Full-height image background with soft bottom gradient overlay. Content anchored at the bottom.",
+      "elements": [
+        "Daily Wellbeing Quote (fetched from GET /api/quotes/welcome)",
+        "Google Login CTA (prominent, using secondary button style for soft contrast)"
+      ],
+      "visuals": "Use `calm_room_onboarding` image as absolute background object-cover. Gradient overlay: `bg-gradient-to-t from-[#FDFBF7] via-[#FDFBF7]/80 to-transparent`."
+    },
+    "Auth_Callback": {
+      "layout": "Centered minimalist loader.",
+      "elements": ["Gentle pulsing text: 'Preparing your space...'", "No hard spinners."]
+    },
+    "Home_Dashboard": {
+      "layout": "Mobile-first single column, left-aligned typography.",
+      "elements": [
+        "Header: 'Welcome, [name]' + Profile/Logout dropdown",
+        "Quote Card: Elegant italic Spectral font, slight accent color.",
+        "Mode Picker (Asymmetric Bento): 2 large touch targets.",
+        "Card A (Dominant): 'Center Your Mind' (manage and control your mind)",
+        "Card B (Softer/Supporting): 'A Listening Ear' (ask for therapy/help)",
+        "Recent Chats List: Left aligned, soft dividers. Max 5 items."
+      ]
+    },
+    "Chat_Screen": {
+      "layout": "Sticky header and sticky bottom input.",
+      "elements": [
+        "Header: Mode badge ('Center Your Mind' or 'A Listening Ear') + Back link.",
+        "Crisis Banner: Conditionally rendered (crisis_detected). Warm terra-cotta background (#F5EBEB). Text: 'You are not alone. Please consider reaching out to a professional: [Helpline Numbers]'.",
+        "Messages: User bubbles (dusty lavender bg, white text). AI bubbles (soft sand bg, dark text).",
+        "Input: Sticky bottom wrapper with soft shadow. Lucide 'Send' icon (no emojis)."
+      ]
+    },
+    "Subscription_Pricing": {
+      "layout": "Vertical stack of 3 cards, generous gaps.",
+      "elements": [
+        "Header: 'Continue your journey'",
+        "Cards: Weekly ($4.99), Monthly ($14.99), Annual ($99.99).",
+        "Highlight: Monthly card has subtle 1px border `border-[#8A7E94]` and a soft 'Recommended' badge."
+      ]
+    },
+    "Billing_States": {
+      "Success": "Calm, centered confirmation message. 'Your mind space is reserved.'",
+      "Cancel": "Soft, guilt-free exit. 'Take your time. We are here when you are ready.'"
+    }
+  },
+  "motion": {
+    "page_transitions": "Fade in with slight upward drift (`translate-y-2` to `0`, opacity `0` to `1`).",
+    "micro_interactions": "Buttons shrink slightly on active (`active:scale-95`). List items stagger fade in.",
+    "loading": "Use opacity pulsing (`animate-pulse`) instead of jarring spinners."
+  },
+  "media": {
+    "image_urls": {
+      "calm_room_onboarding": "https://static.prod-images.emergentagent.com/jobs/e35675a9-5ef3-4be0-8b93-e10a254e86b9/images/81a29c6ddfdee16b689063471d0d9a58d9410cf17f51b6b9a6b556a91a94f2bb.png"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Install Google Fonts 'Spectral' and 'Figtree' in your index.css or via link tags.",
+    "Use lucide-react for all icons. NO EMOJIS.",
+    "Always apply data-testid to interactive elements (e.g., `data-testid='login-button'`, `data-testid='chat-input'`).",
+    "Follow mobile-first container width max-w-md mx-auto strictly to maintain the app feel.",
+    "Ensure contrast rules are respected (dark text on light sand backgrounds, white text on primary lavender).",
+    "Use Shadcn components but override their standard 'tech' look with the rounded-2xl, soft shadow classes defined above."
+  ]
+}
