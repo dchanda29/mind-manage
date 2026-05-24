@@ -13,8 +13,8 @@ export default function BillingSuccess() {
 
   useEffect(() => {
     const url = new URL(window.location.href);
-    const sessionId = url.searchParams.get("session_id");
-    if (!sessionId) {
+    const orderId = url.searchParams.get("order_id");
+    if (!orderId) {
       navigate("/home", { replace: true });
       return;
     }
@@ -25,9 +25,9 @@ export default function BillingSuccess() {
     const poll = async () => {
       attempts += 1;
       try {
-        const res = await api.getPaymentStatus(sessionId);
+        const res = await api.getPaymentStatus(orderId);
         setMeta(res);
-        if (res.payment_status === "paid") {
+        if (res.payment_status === "paid" || res.payment_status === "captured") {
           setStatus("paid");
           return;
         }

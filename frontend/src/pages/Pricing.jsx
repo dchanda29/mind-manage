@@ -22,13 +22,49 @@ export default function Pricing() {
     api.getSubStatus().then(setSub).catch(() => {});
   }, []);
 
+  const loadRazorpayScript = async () => {
+    if (window.Razorpay) return true;
+    return new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.async = true;
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
+  };
+
   const handleSelect = async (id) => {
     setLoading(id);
     setError(null);
     try {
       const origin = window.location.origin;
-      const { url } = await api.createCheckout(id, origin);
-      window.location.href = url;
+      const checkout = await api.createCheckout(id, origin);
+      const scriptReady = await loadRazorpayScript();
+      if (!scriptReady || !window.Razorpay) {
+        throw new Error("Razorpay script failed");
+      }
+      const rz = new window.Razorpay({
+        key: checkout.key_id,
+        amount: checkout.amount,
+        currency: checkout.currency,
+        name: checkout.name,
+        description: checkout.description,
+        order_id: checkout.order_id,
+        prefill: { email: checkout.prefill_email },
+        handler: async (response) => {
+          try {
+            await api.verifyPayment(response);
+            navigate(`/billing/success?order_id=${encodeURIComponent(checkout.order_id)}`);
+          } catch {
+            navigate("/billing/cancel");
+          }
+        },
+        modal: {
+          ondismiss: () => navigate("/billing/cancel"),
+        },
+      });
+      rz.open();
     } catch (e) {
       setError("Couldn't start checkout. Try again in a moment.");
       setLoading(null);
@@ -42,7 +78,7 @@ export default function Pricing() {
       const { url } = await api.openBillingPortal(window.location.origin + "/home");
       window.location.href = url;
     } catch (e) {
-      setError("Couldn't open billing portal. Email d29chanda@gmail.com to manage your subscription.");
+      setError("Self-serve cancellation isn't enabled yet. Email d29chanda@gmail.com to manage your subscription.");
       setPortalLoading(false);
     }
   };
@@ -136,7 +172,7 @@ export default function Pricing() {
         )}
 
         <p className="text-[11px] text-mm-secondary mt-10 leading-relaxed">
-          Renews automatically. Cancel anytime through Stripe. Test mode — use card 4242 4242 4242 4242 with any future date.
+          Renews automatically. Cancel anytime from support. Razorpay test mode supports cards, UPI, and netbanking.
         </p>
       </div>
     </div>

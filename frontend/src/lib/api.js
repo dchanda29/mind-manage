@@ -60,8 +60,9 @@ export const api = {
   getPackages: () => client.get("/subscription/packages").then((r) => r.data),
   createCheckout: (package_id, origin_url) =>
     client.post("/payments/checkout", { package_id, origin_url }).then((r) => r.data),
-  getPaymentStatus: (sessionId) =>
-    client.get(`/payments/status/${sessionId}`).then((r) => r.data),
+  verifyPayment: (payload) => client.post("/payments/verify", payload).then((r) => r.data),
+  getPaymentStatus: (orderId) =>
+    client.get(`/payments/status/${orderId}`).then((r) => r.data),
   openBillingPortal: (return_url) =>
     client.post("/subscription/portal", { return_url }).then((r) => r.data),
 

@@ -20,8 +20,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 from datetime import datetime, timezone, timedelta
-
-import stripe
+import hashlib
+import hmac
 from google import genai
 from google.genai import types as genai_types
 
@@ -35,8 +35,9 @@ logger = logging.getLogger("mindmanage")
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
-STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 # Public URL of THIS backend (e.g. https://mindmanage-be.onrender.com). Used for OAuth redirect_uri.
@@ -193,8 +194,14 @@ class CheckoutRequest(BaseModel):
 
 
 class CheckoutResponse(BaseModel):
-    url: str
-    session_id: str
+    provider: str
+    key_id: str
+    order_id: str
+    amount: int
+    currency: str
+    name: str
+    description: str
+    prefill_email: str
 
 
 class PaymentStatusResponse(BaseModel):
@@ -203,6 +210,7 @@ class PaymentStatusResponse(BaseModel):
     amount_total: float
     currency: str
     package_id: Optional[str] = None
+    order_id: Optional[str] = None
 
 
 # ---------- Helpers ----------
@@ -309,7 +317,7 @@ async def health():
         "time": _to_iso(_now()),
         "config": {
             "gemini": bool(GEMINI_API_KEY),
-            "stripe": bool(STRIPE_API_KEY),
+            "razorpay": bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET),
             "google_oauth": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET),
         },
     }
@@ -459,37 +467,10 @@ async def subscription_status(request: Request):
 
 @api.post("/subscription/portal")
 async def subscription_portal(request: Request):
-    """Create a Stripe Billing Portal session so users can self-manage / cancel."""
-    user = await require_user(request)
-    if not STRIPE_API_KEY:
-        raise HTTPException(status_code=500, detail="Stripe not configured")
-    body = await request.json()
-    return_url = (body.get("return_url") or "").rstrip("/")
-    if not return_url:
-        raise HTTPException(status_code=400, detail="return_url required")
-
-    txn = await db.payment_transactions.find_one(
-        {"user_id": user.user_id, "credited": True},
-        {"_id": 0},
-        sort=[("credited_at", -1)],
+    raise HTTPException(
+        status_code=501,
+        detail="Razorpay customer self-serve portal is not integrated yet. Contact support to manage cancellations."
     )
-    if not txn:
-        raise HTTPException(status_code=404, detail="No active subscription found")
-
-    stripe.api_key = STRIPE_API_KEY
-    try:
-        sess = stripe.checkout.Session.retrieve(txn["session_id"])
-        customer_id = sess.get("customer")
-        if not customer_id:
-            raise HTTPException(status_code=404, detail="No customer on file")
-        portal = stripe.billing_portal.Session.create(
-            customer=customer_id,
-            return_url=return_url,
-        )
-        return {"url": portal.url}
-    except stripe.error.StripeError as e:
-        logger.warning("Billing portal error: %s", e)
-        raise HTTPException(status_code=502, detail="Stripe error")
 
 
 @api.get("/streak")
@@ -669,64 +650,64 @@ async def _llm_reply(mode: str, history: list, new_user_text: str) -> str:
     return text or "I'm here. Could you say a little more about what's going on?"
 
 
-# ---------- Routes: Stripe Payments (direct stripe library) ----------
+# ---------- Routes: Razorpay Payments ----------
 @api.post("/payments/checkout", response_model=CheckoutResponse)
 async def create_checkout(request: Request, payload: CheckoutRequest):
     user = await require_user(request)
     if payload.package_id not in SUBSCRIPTION_PACKAGES:
         raise HTTPException(status_code=400, detail="Invalid package")
-    if not STRIPE_API_KEY:
-        raise HTTPException(status_code=500, detail="Stripe not configured")
+    if not (RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET):
+        raise HTTPException(status_code=500, detail="Razorpay not configured")
 
     pkg = SUBSCRIPTION_PACKAGES[payload.package_id]
-    origin = payload.origin_url.rstrip("/")
-    success_url = f"{origin}/billing/success?session_id={{CHECKOUT_SESSION_ID}}"
-    cancel_url = f"{origin}/billing/cancel"
+    amount_paise = int(round(pkg["amount"] * 100))
 
-    stripe.api_key = STRIPE_API_KEY
-    try:
-        session = stripe.checkout.Session.create(
-            mode="payment",
-            payment_method_types=["card"],
-            line_items=[{
-                "price_data": {
-                    "currency": pkg["currency"],
-                    "product_data": {
-                        "name": f"MindManage {pkg['label']}",
-                        "description": f"{pkg['days']}-day access",
-                    },
-                    "unit_amount": int(round(pkg["amount"] * 100)),
-                },
-                "quantity": 1,
-            }],
-            success_url=success_url,
-            cancel_url=cancel_url,
-            customer_email=user.email,
-            metadata={
-                "user_id": user.user_id,
-                "email": user.email,
-                "package_id": payload.package_id,
-                "source": "mindmanage_subscription",
-            },
-        )
-    except stripe.error.StripeError as e:
-        logger.warning("Stripe error: %s", e)
-        raise HTTPException(status_code=502, detail="Stripe error")
+    auth = (RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
+    order_payload = {
+        "amount": amount_paise,
+        "currency": pkg["currency"].upper(),
+        "receipt": f"mm_{user.user_id}_{uuid.uuid4().hex[:10]}",
+        "notes": {
+            "user_id": user.user_id,
+            "email": user.email,
+            "package_id": payload.package_id,
+            "source": "mindmanage_subscription",
+        },
+    }
+    async with httpx.AsyncClient(timeout=20.0) as cli:
+        r = await cli.post("https://api.razorpay.com/v1/orders", auth=auth, json=order_payload)
+    if r.status_code not in (200, 201):
+        logger.warning("Razorpay order create failed: %s", r.text)
+        raise HTTPException(status_code=502, detail="Razorpay order creation failed")
+    order = r.json()
+    order_id = order.get("id")
+    if not order_id:
+        raise HTTPException(status_code=502, detail="Razorpay returned invalid order")
 
     await db.payment_transactions.insert_one({
-        "session_id": session.id,
+        "order_id": order_id,
         "user_id": user.user_id,
         "email": user.email,
         "package_id": payload.package_id,
         "amount": float(pkg["amount"]),
-        "currency": pkg["currency"],
-        "metadata": dict(session.metadata or {}),
+        "amount_paise": amount_paise,
+        "currency": pkg["currency"].upper(),
+        "metadata": order_payload["notes"],
         "payment_status": "initiated",
-        "status": "open",
+        "status": order.get("status", "created"),
         "credited": False,
         "created_at": _to_iso(_now()),
     })
-    return CheckoutResponse(url=session.url, session_id=session.id)
+    return CheckoutResponse(
+        provider="razorpay",
+        key_id=RAZORPAY_KEY_ID,
+        order_id=order_id,
+        amount=amount_paise,
+        currency=pkg["currency"].upper(),
+        name="MindManage",
+        description=f"MindManage {pkg['label']} plan",
+        prefill_email=user.email,
+    )
 
 
 async def _credit_subscription(user_id: str, package_id: str):
@@ -750,79 +731,105 @@ async def _credit_subscription(user_id: str, package_id: str):
     )
 
 
-@api.get("/payments/status/{session_id}", response_model=PaymentStatusResponse)
-async def payment_status(session_id: str, request: Request):
+@api.get("/payments/status/{order_id}", response_model=PaymentStatusResponse)
+async def payment_status(order_id: str, request: Request):
     user = await require_user(request)
-    txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    txn = await db.payment_transactions.find_one({"order_id": order_id}, {"_id": 0})
     if not txn or txn["user_id"] != user.user_id:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    if not STRIPE_API_KEY:
-        raise HTTPException(status_code=500, detail="Stripe not configured")
-
-    stripe.api_key = STRIPE_API_KEY
-    try:
-        session = stripe.checkout.Session.retrieve(session_id)
-    except stripe.error.StripeError as e:
-        logger.warning("Stripe retrieve error: %s", e)
-        raise HTTPException(status_code=502, detail="Stripe error")
-
-    update = {
-        "payment_status": session.payment_status,
-        "status": session.status,
-        "amount_total": session.amount_total or 0,
-        "currency": session.currency,
-        "updated_at": _to_iso(_now()),
-    }
-    await db.payment_transactions.update_one({"session_id": session_id}, {"$set": update})
-
-    if session.payment_status == "paid" and not txn.get("credited"):
-        await _credit_subscription(user.user_id, txn["package_id"])
-        await db.payment_transactions.update_one(
-            {"session_id": session_id},
-            {"$set": {"credited": True, "credited_at": _to_iso(_now())}},
-        )
+    payment_status = "paid" if txn.get("credited") else txn.get("payment_status", "created")
+    status = "paid" if txn.get("credited") else txn.get("status", "created")
 
     return PaymentStatusResponse(
-        status=session.status or "unknown",
-        payment_status=session.payment_status or "unknown",
-        amount_total=float(session.amount_total or 0) / 100.0,
-        currency=session.currency or "usd",
+        status=status,
+        payment_status=payment_status,
+        amount_total=float(txn.get("amount", 0.0)),
+        currency=(txn.get("currency") or "INR").lower(),
         package_id=txn.get("package_id"),
+        order_id=txn.get("order_id"),
     )
 
 
-@api.post("/webhook/stripe")
-async def stripe_webhook(request: Request):
-    if not STRIPE_API_KEY:
-        return JSONResponse({"ok": False, "error": "stripe not configured"}, status_code=500)
+@api.post("/payments/verify")
+async def verify_payment(request: Request):
+    user = await require_user(request)
+    body = await request.json()
+    razorpay_order_id = body.get("razorpay_order_id")
+    razorpay_payment_id = body.get("razorpay_payment_id")
+    razorpay_signature = body.get("razorpay_signature")
+    if not (razorpay_order_id and razorpay_payment_id and razorpay_signature):
+        raise HTTPException(status_code=400, detail="Missing verification fields")
+    if not RAZORPAY_KEY_SECRET:
+        raise HTTPException(status_code=500, detail="Razorpay not configured")
+
+    expected = hmac.new(
+        RAZORPAY_KEY_SECRET.encode("utf-8"),
+        f"{razorpay_order_id}|{razorpay_payment_id}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, razorpay_signature):
+        raise HTTPException(status_code=400, detail="Invalid Razorpay signature")
+
+    txn = await db.payment_transactions.find_one({"order_id": razorpay_order_id}, {"_id": 0})
+    if not txn or txn["user_id"] != user.user_id:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    if not txn.get("credited"):
+        await _credit_subscription(user.user_id, txn["package_id"])
+    await db.payment_transactions.update_one(
+        {"order_id": razorpay_order_id},
+        {"$set": {
+            "status": "paid",
+            "payment_status": "captured",
+            "payment_id": razorpay_payment_id,
+            "signature": razorpay_signature,
+            "credited": True,
+            "credited_at": _to_iso(_now()),
+            "updated_at": _to_iso(_now()),
+        }},
+    )
+    return {"ok": True, "order_id": razorpay_order_id, "payment_id": razorpay_payment_id}
+
+
+@api.post("/webhook/razorpay")
+async def razorpay_webhook(request: Request):
+    if not RAZORPAY_KEY_SECRET:
+        return JSONResponse({"ok": False, "error": "razorpay not configured"}, status_code=500)
     body = await request.body()
-    sig_header = request.headers.get("stripe-signature", "")
-    stripe.api_key = STRIPE_API_KEY
+    sig_header = request.headers.get("x-razorpay-signature", "")
     try:
-        if STRIPE_WEBHOOK_SECRET:
-            event = stripe.Webhook.construct_event(body, sig_header, STRIPE_WEBHOOK_SECRET)
-        else:
-            # Dev: accept unsigned payloads (NEVER do this in production)
-            import json
-            event = stripe.Event.construct_from(json.loads(body.decode()), STRIPE_API_KEY)
+        if not RAZORPAY_WEBHOOK_SECRET:
+            return JSONResponse({"ok": True, "ignored": "webhook secret not configured"})
+        expected = hmac.new(
+            RAZORPAY_WEBHOOK_SECRET.encode("utf-8"),
+            body,
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(expected, sig_header):
+            return JSONResponse({"ok": False}, status_code=400)
+        import json
+        event = json.loads(body.decode("utf-8"))
     except Exception as e:
         logger.warning("Webhook verification failed: %s", e)
         return JSONResponse({"ok": False}, status_code=400)
 
-    if event["type"] in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
-        session_obj = event["data"]["object"]
-        session_id = session_obj.get("id")
-        payment_status = session_obj.get("payment_status")
-        txn = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
-        if txn and payment_status == "paid" and not txn.get("credited"):
+    if event.get("event") == "payment.captured":
+        payment = (event.get("payload") or {}).get("payment", {}).get("entity", {})
+        order_id = payment.get("order_id")
+        payment_id = payment.get("id")
+        txn = await db.payment_transactions.find_one({"order_id": order_id}, {"_id": 0})
+        if txn and not txn.get("credited"):
             await _credit_subscription(txn["user_id"], txn["package_id"])
             await db.payment_transactions.update_one(
-                {"session_id": session_id},
+                {"order_id": order_id},
                 {"$set": {
                     "credited": True,
                     "credited_at": _to_iso(_now()),
-                    "payment_status": payment_status,
-                    "last_event": event["type"],
+                    "payment_status": "captured",
+                    "status": "paid",
+                    "payment_id": payment_id,
+                    "last_event": event.get("event"),
+                    "updated_at": _to_iso(_now()),
                 }},
             )
 
@@ -851,7 +858,7 @@ async def on_startup():
     await db.user_sessions.create_index("user_id")
     await db.chats.create_index([("user_id", 1), ("updated_at", -1)])
     await db.chats.create_index("chat_id", unique=True)
-    await db.payment_transactions.create_index("session_id", unique=True)
+    await db.payment_transactions.create_index("order_id", unique=True)
     await db.oauth_states.create_index("created_at", expireAfterSeconds=600)  # auto-clean stale states
     logger.info("MindManage backend ready (portable mode).")
 
